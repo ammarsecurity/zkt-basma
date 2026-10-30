@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 
 from zk import ZK
 
@@ -232,6 +233,25 @@ def delete_device_user(ip, port, password, user_id):
             log.warning("delete_user failed for %s", user_id, exc_info=True)
             raise DeviceError("تعذر حذف الموظف من الجهاز") from exc
         return True
+    finally:
+        _close(conn)
+
+
+def sync_clock(ip, port, password):
+    conn = _open(ip, port, password, timeout=15)
+    try:
+        try:
+            before = conn.get_time()
+        except Exception:
+            log.debug("Reading device time failed", exc_info=True)
+            before = None
+        now = datetime.now().replace(microsecond=0)
+        try:
+            conn.set_time(now)
+        except Exception as exc:
+            log.warning("set_time failed for %s:%s", ip, port, exc_info=True)
+            raise DeviceError("تعذر ضبط ساعة الجهاز") from exc
+        return _stamp(before), _stamp(now)
     finally:
         _close(conn)
 

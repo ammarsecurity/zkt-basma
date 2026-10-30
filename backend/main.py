@@ -1,7 +1,7 @@
 import logging
 import json
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from urllib.parse import quote
 
 import ipaddress
@@ -11,17 +11,18 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, field_validator
 
 import db
-from excel_export import build_workbook
+from excel_export import build_summary_workbook, build_workbook
 from formatting import (
     KIND_LABELS,
-    display_date,
     clock_12,
+    display_date,
     display_stamp,
+    duration_between,
     now_stamp,
     split_stamp,
     status_kind,
-    weekday_name,
     status_label,
+    weekday_name,
 )
 from paths import frontend_dist
 from zk_service import (
@@ -31,6 +32,7 @@ from zk_service import (
     delete_device_user,
     list_device_users,
     pull_device,
+    sync_clock,
     test_connection,
     update_device_user,
 )
@@ -320,6 +322,27 @@ def post_sync(device_id: int):
         conn.close()
 
 
+@app.post("/api/devices/{device_id}/time")
+def post_time(device_id: int):
+    conn = db.connect()
+    try:
+        device = _device_or_404(conn, device_id)
+        try:
+            before, after = sync_clock(device["ip"], device["port"], device["password"])
+        except DeviceError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        previous = _when(before) or "غير معروفة"
+        current = _when(after)
+        return {
+            "ok": True,
+            "message": f"ضُبطت ساعة الجهاز. كانت {previous} وأصبحت {current}",
+            "before": previous,
+            "after": current,
+        }
+    finally:
+        conn.close()
+
+
 FINGER_LABELS = {
     0: "خنصر اليد اليسرى",
     1: "بنصر اليد اليسرى",
@@ -379,13 +402,16 @@ def _employee_out(row):
 def get_employees(
     device_id: int | None = None,
     q: str = "",
+    finger: str = "all",
     page: int = Query(default=1, ge=1),
 ):
+    if finger not in ("all", "none", "enrolled"):
+        raise HTTPException(status_code=400, detail="فلتر البصمة غير صحيح")
     conn = db.connect()
     try:
         if device_id is not None:
             _device_or_404(conn, device_id)
-        rows, total = db.query_employees(conn, device_id, (q or "").strip(), page)
+        rows, total = db.query_employees(conn, device_id, (q or "").strip(), page, finger)
         return {
             "items": [_employee_out(row) for row in rows],
             "total": total,
@@ -478,6 +504,307 @@ def refresh_employees(device_id: int):
         }
     finally:
         conn.close()
+
+
+def _when(value):
+    if not value:
+        return ""
+    date_text, clock = split_stamp(value)
+    if not date_text:
+        return ""
+    if not clock:
+        return date_text
+    return f"{date_text} {clock_12(clock, with_seconds=True)}"
+
+
+def _attendance_period(mode, day, month):
+    if mode == "month":
+        text = (month or "").strip()
+        try:
+            year_text, month_text = text.split("-")
+            start = date(int(year_text), int(month_text), 1)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="الشهر غير صحيح") from None
+        if start.month == 12:
+            end = date(start.year + 1, 1, 1)
+        else:
+            end = date(start.year, start.month + 1, 1)
+        label = f"{start.month:02d}/{start.year}"
+        return start.isoformat(), end.isoformat(), label
+    text = (day or "").strip()
+    try:
+        start = date.fromisoformat(text)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="التاريخ غير صحيح") from None
+    end = start + timedelta(days=1)
+    return start.isoformat(), end.isoformat(), display_date(start.isoformat())
+
+
+def _attendance_item(row):
+    return {
+        "id": row["id"],
+        "user_id": row["user_id"],
+        "employee_name": row["employee_name"] or "",
+        "device_id": row["device_id"],
+        "device_name": row["device_name"],
+        "present": row["punches"] > 0,
+        "punches": row["punches"],
+        "days": row["days"],
+        "first_at": _when(row["first_punch"]),
+        "last_at": _when(row["last_punch"]),
+    }
+
+
+def _attendance_query(mode, day, month, device_id, q, status, page):
+    if mode not in ("day", "month"):
+        raise HTTPException(status_code=400, detail="نوع التقرير غير صحيح")
+    if status not in ("all", "present", "absent"):
+        raise HTTPException(status_code=400, detail="فلتر الحضور غير صحيح")
+    start, end, label = _attendance_period(mode, day, month)
+    conn = db.connect()
+    try:
+        if device_id is not None:
+            _device_or_404(conn, device_id)
+        rows, total, present, absent = db.attendance_summary(
+            conn,
+            start,
+            end,
+            device_id,
+            (q or "").strip(),
+            status,
+            page,
+        )
+        device_name = "كل الأجهزة"
+        if device_id is not None:
+            device = db.get_device(conn, device_id)
+            device_name = device["name"] if device else "كل الأجهزة"
+        return {
+            "mode": mode,
+            "label": label,
+            "device": device_name,
+            "items": [_attendance_item(row) for row in rows],
+            "total": total,
+            "present": present,
+            "absent": absent,
+            "page": page or 1,
+            "page_size": db.PAGE_SIZE,
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/attendance")
+def get_attendance(
+    mode: str = "day",
+    date_value: str | None = Query(default=None, alias="date"),
+    month: str | None = None,
+    device_id: int | None = None,
+    q: str = "",
+    status: str = "all",
+    page: int = Query(default=1, ge=1),
+):
+    return _attendance_query(mode, date_value, month, device_id, q, status, page)
+
+
+@app.get("/api/attendance/export")
+def export_attendance(
+    mode: str = "day",
+    date_value: str | None = Query(default=None, alias="date"),
+    month: str | None = None,
+    device_id: int | None = None,
+    q: str = "",
+    status: str = "all",
+):
+    data = _attendance_query(mode, date_value, month, device_id, q, status, None)
+    if data["total"] == 0:
+        raise HTTPException(status_code=400, detail="لا توجد سجلات مطابقة للتصدير")
+    if mode == "month":
+        headers = ["ت", "اسم الموظف", "رقم الموظف", "الجهاز", "أيام الحضور", "أول بصمة", "آخر بصمة", "عدد البصمات"]
+        widths = [8, 28, 16, 22, 16, 24, 24, 16]
+        title = "التقرير الشهري للحضور"
+        sheet = "الحضور الشهري"
+        values = [
+            [
+                index,
+                row["employee_name"] or "—",
+                row["user_id"],
+                row["device_name"],
+                row["days"],
+                row["first_at"] or "—",
+                row["last_at"] or "—",
+                row["punches"],
+            ]
+            for index, row in enumerate(data["items"], start=1)
+        ]
+        filename = f"حضور_{month or 'شهر'}.xlsx"
+    else:
+        headers = ["ت", "اسم الموظف", "رقم الموظف", "الجهاز", "أول بصمة", "آخر بصمة", "عدد البصمات", "الحالة"]
+        widths = [8, 28, 16, 22, 24, 24, 16, 14]
+        title = "ملخص حضور اليوم"
+        sheet = "حضور اليوم"
+        values = [
+            [
+                index,
+                row["employee_name"] or "—",
+                row["user_id"],
+                row["device_name"],
+                row["first_at"] or "—",
+                row["last_at"] or "—",
+                row["punches"],
+                "حضر" if row["present"] else "لم يحضر",
+            ]
+            for index, row in enumerate(data["items"], start=1)
+        ]
+        filename = f"حضور_{date_value or 'يوم'}.xlsx"
+        line = f"الجهاز: {data['device']}  ·  التاريخ: {data['label']}  ·  حضر: {data['present']}  ·  لم يحضر: {data['absent']}"
+    if mode == "month":
+        line = f"الجهاز: {data['device']}  ·  الشهر: {data['label']}  ·  حضر: {data['present']}  ·  لم يحضر: {data['absent']}"
+    payload = build_summary_workbook(
+        sheet,
+        title,
+        headers,
+        widths,
+        values,
+        {
+            "exported_at": display_stamp(now_stamp()),
+            "count": f"{data['total']:,}",
+            "line": line,
+        },
+    )
+    return Response(
+        content=payload,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
+
+def _detail_day(day):
+    times = day["times"]
+    clocks = []
+    for stamp in times:
+        _date_text, clock = split_stamp(stamp)
+        clocks.append(clock_12(clock, with_seconds=True))
+    gap = duration_between(times[0], times[-1]) if len(times) >= 2 else ""
+    return {
+        "date": display_date(day["date"]),
+        "weekday": weekday_name(day["date"]),
+        "times": clocks,
+        "gap": gap,
+        "count": len(times),
+    }
+
+
+def _detail_item(row):
+    return {
+        "id": row["id"],
+        "user_id": row["user_id"],
+        "employee_name": row["employee_name"] or "",
+        "device_id": row["device_id"],
+        "device_name": row["device_name"],
+        "punches": row["punches"],
+        "days": [_detail_day(day) for day in row["days"]],
+    }
+
+
+def _detail_query(month, device_id, q, page, user_id=""):
+    start, end, label = _attendance_period("month", None, month)
+    conn = db.connect()
+    try:
+        if device_id is not None:
+            _device_or_404(conn, device_id)
+        rows, total, punch_total = db.month_punch_details(
+            conn,
+            start,
+            end,
+            device_id,
+            (q or "").strip(),
+            page,
+            (user_id or "").strip(),
+        )
+        device_name = "كل الأجهزة"
+        if device_id is not None:
+            device = db.get_device(conn, device_id)
+            device_name = device["name"] if device else "كل الأجهزة"
+        return {
+            "label": label,
+            "device": device_name,
+            "items": [_detail_item(row) for row in rows],
+            "total": total,
+            "punches": punch_total,
+            "page": page or 1,
+            "page_size": db.PAGE_SIZE,
+        }
+    finally:
+        conn.close()
+
+
+@app.get("/api/attendance/details")
+def get_attendance_details(
+    month: str | None = None,
+    device_id: int | None = None,
+    q: str = "",
+    page: int = Query(default=1, ge=1),
+):
+    return _detail_query(month, device_id, q, page)
+
+
+@app.get("/api/attendance/details/export")
+def export_attendance_details(
+    month: str | None = None,
+    device_id: int | None = None,
+    q: str = "",
+    user_id: str = "",
+):
+    data = _detail_query(month, device_id, q, None, user_id)
+    if data["total"] == 0:
+        raise HTTPException(status_code=400, detail="لا توجد سجلات مطابقة للتصدير")
+    headers = ["ت", "اسم الموظف", "رقم الموظف", "الجهاز", "عدد البصمات", "اليوم", "التاريخ", "أوقات البصمات", "فرق الوقت"]
+    widths = [8, 28, 16, 18, 16, 14, 16, 42, 16]
+    values = []
+    index = 1
+    for employee in data["items"]:
+        name = employee["employee_name"] or "—"
+        if not employee["days"]:
+            values.append([index, name, employee["user_id"], employee["device_name"], employee["punches"], "—", "—", "—", "—"])
+            index += 1
+            continue
+        for day in employee["days"]:
+            values.append([
+                index,
+                name,
+                employee["user_id"],
+                employee["device_name"],
+                employee["punches"],
+                day["weekday"],
+                day["date"],
+                " — ".join(day["times"]),
+                day["gap"] or "—",
+            ])
+            index += 1
+    one = data["items"][0] if user_id and len(data["items"]) == 1 else None
+    filename = f"تفاصيل_{one['user_id']}_{month or 'شهر'}.xlsx" if one else f"تفاصيل_{month or 'شهر'}.xlsx"
+    title = "تفاصيل بصمات الموظف" if one else "تفاصيل بصمات الشهر"
+    who = (one["employee_name"] or one["user_id"]) if one else ""
+    line = f"الجهاز: {data['device']}  ·  الشهر: {data['label']}  ·  عدد البصمات: {data['punches']}"
+    if who:
+        line = f"الموظف: {who}  ·  {line}"
+    payload = build_summary_workbook(
+        "تفاصيل الشهر",
+        title,
+        headers,
+        widths,
+        values,
+        {
+            "exported_at": display_stamp(now_stamp()),
+            "count": f"{len(values):,}",
+            "line": line,
+        },
+    )
+    return Response(
+        content=payload,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
 
 
 @app.get("/api/logs")

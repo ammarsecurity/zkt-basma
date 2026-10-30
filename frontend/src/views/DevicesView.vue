@@ -10,6 +10,9 @@ const error = ref('')
 const saving = ref(false)
 const testing = ref(false)
 const syncingId = ref(null)
+const syncingAll = ref(false)
+const pendingTime = ref(null)
+const syncingTime = ref(false)
 const deleting = ref(false)
 const editingId = ref(null)
 const formOpen = ref(false)
@@ -184,6 +187,44 @@ async function syncDevice(device) {
   }
 }
 
+async function syncAll() {
+  if (!devices.value.length || syncingId.value != null) return
+  syncingAll.value = true
+  let ok = 0
+  let failed = 0
+  let lastError = ''
+  for (const device of devices.value) {
+    syncingId.value = device.id
+    try {
+      await api(`/api/devices/${device.id}/sync`, { method: 'POST' })
+      ok += 1
+    } catch (err) {
+      failed += 1
+      lastError = err.message
+    }
+  }
+  syncingId.value = null
+  syncingAll.value = false
+  if (failed === 0) notify(`تم سحب ${latin(ok)} جهاز`)
+  else if (ok === 0 && devices.value.length === 1) notify(lastError, 'error')
+  else notify(`تم سحب ${latin(ok)} جهاز، وفشل ${latin(failed)}`, 'error')
+  await load({ silent: true })
+}
+
+async function confirmTime() {
+  if (!pendingTime.value) return
+  syncingTime.value = true
+  try {
+    const result = await api(`/api/devices/${pendingTime.value.id}/time`, { method: 'POST' })
+    pendingTime.value = null
+    notify(result.message)
+  } catch (err) {
+    notify(err.message, 'error')
+  } finally {
+    syncingTime.value = false
+  }
+}
+
 async function confirmDelete() {
   if (!pendingDelete.value) return
   deleting.value = true
@@ -220,7 +261,18 @@ onMounted(load)
         <NavToggle />
         <h1 class="page-title">الأجهزة</h1>
       </div>
-      <v-btn color="primary" @click="openCreate">إضافة جهاز</v-btn>
+      <div class="head-actions">
+        <v-btn
+          v-if="!loading && devices.length"
+          variant="outlined"
+          :loading="syncingAll"
+          :disabled="syncingId != null"
+          @click="syncAll"
+        >
+          سحب الكل
+        </v-btn>
+        <v-btn color="primary" @click="openCreate">إضافة جهاز</v-btn>
+      </div>
     </header>
 
     <v-card class="app-card sheet">
@@ -278,6 +330,16 @@ onMounted(load)
                       @click="syncDevice(device)"
                     >
                       سحب
+                    </v-btn>
+                    <v-btn
+                      class="icon-btn"
+                      icon
+                      variant="text"
+                      aria-label="مزامنة الساعة"
+                      :disabled="syncingId != null || syncingTime"
+                      @click="pendingTime = device"
+                    >
+                      <span class="material-symbols-rounded">schedule</span>
                     </v-btn>
                     <v-btn class="icon-btn" icon variant="text" aria-label="تعديل" @click="editDevice(device)">
                       <span class="material-symbols-rounded">edit</span>
@@ -357,6 +419,22 @@ onMounted(load)
             <v-btn variant="text" type="button" @click="closeForm">إلغاء</v-btn>
           </div>
         </form>
+      </v-card>
+    </v-dialog>
+
+    <v-dialog
+      :model-value="pendingTime != null"
+      max-width="440"
+      :persistent="syncingTime"
+      @update:model-value="(open) => { if (!open && !syncingTime) pendingTime = null }"
+    >
+      <v-card class="dialog-card">
+        <h2>مزامنة الساعة</h2>
+        <p>تضبط ساعة «{{ pendingTime?.name }}» على وقت هذه الحاسبة الآن. البصمات المحفوظة سابقاً تبقى بتوقيتها، والبصمات الجديدة تُسجَّل بالوقت الصحيح.</p>
+        <div class="dialog-actions">
+          <v-btn color="primary" :loading="syncingTime" @click="confirmTime">مزامنة</v-btn>
+          <v-btn variant="text" :disabled="syncingTime" @click="pendingTime = null">إلغاء</v-btn>
+        </div>
       </v-card>
     </v-dialog>
 

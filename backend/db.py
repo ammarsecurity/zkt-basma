@@ -160,17 +160,20 @@ def list_employees(conn, device_id=None):
     return rows
 
 
-def query_employees(conn, device_id, query, page):
+def query_employees(conn, device_id, query, page, finger="all"):
     where = []
     params = []
     if device_id is not None:
         where.append("e.device_id = ?")
         params.append(device_id)
     if query:
-        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        where.append("(IFNULL(e.name, '') LIKE ? ESCAPE '\\' OR e.user_id LIKE ? ESCAPE '\\')")
-        like = f"%{escaped}%"
-        params.extend([like, like])
+        clause, like_params = _like_clause(query)
+        where.append(clause)
+        params.extend(like_params)
+    if finger == "none":
+        where.append("e.fingers = '[]'")
+    elif finger == "enrolled":
+        where.append("e.fingers IS NOT NULL AND e.fingers != '[]'")
 
     clause = f"WHERE {' AND '.join(where)}" if where else ""
     joins = """
@@ -243,6 +246,150 @@ def delete_employee(conn, device_id, user_id):
         "DELETE FROM employees WHERE device_id = ? AND user_id = ?",
         (device_id, user_id),
     ).rowcount
+
+
+def _like_clause(query):
+    escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    like = f"%{escaped}%"
+    return "(IFNULL(e.name, '') LIKE ? ESCAPE '\\' OR e.user_id LIKE ? ESCAPE '\\')", [like, like]
+
+
+def attendance_summary(conn, start, end, device_id, query, status, page):
+    where = []
+    params = [start, end]
+    if device_id is not None:
+        where.append("e.device_id = ?")
+        params.append(device_id)
+    if query:
+        clause, like_params = _like_clause(query)
+        where.append(clause)
+        params.extend(like_params)
+    employee_where = f"WHERE {' AND '.join(where)}" if where else ""
+    grouped = f"""
+        SELECT
+            e.id,
+            e.user_id,
+            COALESCE(e.name, '') AS employee_name,
+            e.device_id,
+            d.name AS device_name,
+            MIN(a.timestamp) AS first_punch,
+            MAX(a.timestamp) AS last_punch,
+            COUNT(a.id) AS punches,
+            COUNT(DISTINCT date(a.timestamp)) AS days
+        FROM employees e
+        JOIN devices d ON d.id = e.device_id
+        LEFT JOIN attendance a
+            ON a.device_id = e.device_id
+            AND a.user_id = e.user_id
+            AND date(a.timestamp) >= date(?)
+            AND date(a.timestamp) < date(?)
+        {employee_where}
+        GROUP BY e.id
+    """
+    stats = conn.execute(
+        f"""
+        SELECT
+            COUNT(*) AS total,
+            COALESCE(SUM(CASE WHEN punches > 0 THEN 1 ELSE 0 END), 0) AS present,
+            COALESCE(SUM(CASE WHEN punches = 0 THEN 1 ELSE 0 END), 0) AS absent
+        FROM ({grouped}) s
+        """,
+        params,
+    ).fetchone()
+    status_sql = ""
+    if status == "present":
+        status_sql = "WHERE punches > 0"
+    elif status == "absent":
+        status_sql = "WHERE punches = 0"
+    filtered = conn.execute(
+        f"SELECT COUNT(*) AS n FROM ({grouped}) s {status_sql}",
+        params,
+    ).fetchone()["n"]
+    sql = f"""
+        SELECT * FROM ({grouped}) s
+        {status_sql}
+        ORDER BY CASE WHEN punches = 0 THEN 1 ELSE 0 END, CAST(user_id AS INTEGER), user_id
+    """
+    page_params = list(params)
+    if page is not None:
+        sql += " LIMIT ? OFFSET ?"
+        page_params.extend([PAGE_SIZE, (page - 1) * PAGE_SIZE])
+    rows = conn.execute(sql, page_params).fetchall()
+    return rows, filtered, stats["present"], stats["absent"]
+
+
+def month_punch_details(conn, start, end, device_id, query, page, user_id=""):
+    where = []
+    params = []
+    if device_id is not None:
+        where.append("e.device_id = ?")
+        params.append(device_id)
+    if user_id:
+        where.append("e.user_id = ?")
+        params.append(user_id)
+    if query:
+        clause, like_params = _like_clause(query)
+        where.append(clause)
+        params.extend(like_params)
+    employee_where = f"WHERE {' AND '.join(where)}" if where else ""
+    employees = conn.execute(
+        f"""
+        SELECT
+            e.id,
+            e.user_id,
+            COALESCE(e.name, '') AS employee_name,
+            e.device_id,
+            d.name AS device_name
+        FROM employees e
+        JOIN devices d ON d.id = e.device_id
+        {employee_where}
+        ORDER BY CAST(e.user_id AS INTEGER), e.user_id
+        """,
+        params,
+    ).fetchall()
+    punches = conn.execute(
+        f"""
+        SELECT e.id AS employee_id, a.timestamp
+        FROM employees e
+        JOIN devices d ON d.id = e.device_id
+        JOIN attendance a
+            ON a.device_id = e.device_id
+            AND a.user_id = e.user_id
+            AND date(a.timestamp) >= date(?)
+            AND date(a.timestamp) < date(?)
+        {employee_where}
+        ORDER BY a.timestamp
+        """,
+        [start, end, *params],
+    ).fetchall()
+    by_employee = {}
+    for punch in punches:
+        days = by_employee.setdefault(punch["employee_id"], {})
+        days.setdefault(punch["timestamp"][:10], []).append(punch["timestamp"])
+    items = []
+    for employee in employees:
+        days_map = by_employee.get(employee["id"], {})
+        days = []
+        count = 0
+        for day in sorted(days_map):
+            times = days_map[day]
+            count += len(times)
+            days.append({"date": day, "times": times})
+        items.append({
+            "id": employee["id"],
+            "user_id": employee["user_id"],
+            "employee_name": employee["employee_name"],
+            "device_id": employee["device_id"],
+            "device_name": employee["device_name"],
+            "punches": count,
+            "days": days,
+        })
+    total = len(items)
+    punch_total = len(punches)
+    if page is not None:
+        offset = (page - 1) * PAGE_SIZE
+        items = items[offset:offset + PAGE_SIZE]
+    return items, total, punch_total
 
 
 def save_pull(conn, device_id, users, logs):

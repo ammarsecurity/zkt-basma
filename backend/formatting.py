@@ -95,6 +95,20 @@ def display_stamp(value):
     return f"{date_text} {clock_12(clock, with_seconds=False)}"
 
 
+def duration_between(start, end):
+    try:
+        opened = datetime.strptime(start[:19], "%Y-%m-%d %H:%M:%S")
+        closed = datetime.strptime(end[:19], "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return ""
+    seconds = int((closed - opened).total_seconds())
+    if seconds < 0:
+        seconds = 0
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
 def display_date(value):
     if not value:
         return "غير محدد"

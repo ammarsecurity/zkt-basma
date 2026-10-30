@@ -1114,7 +1114,123 @@ body,
 }
 
 .filters.employee-filters {
-  grid-template-columns: minmax(180px, 280px) minmax(220px, 1fr) auto;
+  grid-template-columns: minmax(160px, 220px) minmax(150px, 200px) minmax(180px, 1fr) auto;
+}
+
+.filters.attendance-filters {
+  grid-template-columns: 210px minmax(160px, 200px) minmax(160px, 220px) minmax(140px, 180px) minmax(180px, 1fr) auto;
+}
+
+.mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  height: 48px;
+  border: 1px solid #E4F5C8;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.mode-switch button {
+  border: 0;
+  background: transparent;
+  color: #3A4A32;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mode-switch button.active {
+  background: #78BC27;
+  color: #142006;
+}
+
+.attendance-table {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+}
+
+.attendance-table th:nth-child(1),
+.attendance-table td:nth-child(1) {
+  width: 18%;
+}
+
+.attendance-table th:nth-child(2),
+.attendance-table td:nth-child(2) {
+  width: 12%;
+}
+
+.attendance-table th:nth-child(3),
+.attendance-table td:nth-child(3) {
+  width: 16%;
+}
+
+.detail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+}
+
+.detail-block {
+  border: 1px solid #E4F5C8;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  background: #F3FAE8;
+}
+
+.detail-head strong {
+  display: block;
+  font-size: 16px;
+}
+
+.detail-head .muted {
+  display: block;
+  margin-top: 2px;
+  color: #475569;
+  font-size: 13px;
+}
+
+.detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.detail-count {
+  margin: 0;
+  font-weight: 700;
+  color: #3A7010;
+  white-space: nowrap;
+}
+
+.detail-empty {
+  margin: 0;
+  padding: 12px 16px;
+  color: #475569;
+}
+
+.detail-scroll {
+  max-height: none;
+}
+
+.punch-time {
+  display: inline-block;
+  margin-inline-end: 12px;
+}
+
+.detail-table {
+  min-width: 560px;
 }
 
 @media (max-width: 1100px) {
@@ -1126,7 +1242,8 @@ body,
     grid-column: 1 / -1;
   }
 
-  .filters.employee-filters {
+  .filters.employee-filters,
+  .filters.attendance-filters {
     grid-template-columns: 1fr 1fr;
   }
 }
@@ -1176,6 +1293,11 @@ body,
     font-size: 13px;
   }
 
+  .attendance-table {
+    min-width: 720px;
+    table-layout: auto;
+  }
+
   .about-split,
   .about-stats,
   .about-services,
@@ -1186,7 +1308,9 @@ body,
   .form-grid,
   .filters,
   .skeleton-row,
-  .stat-grid {
+  .stat-grid,
+  .filters.employee-filters,
+  .filters.attendance-filters {
     grid-template-columns: 1fr;
   }
 

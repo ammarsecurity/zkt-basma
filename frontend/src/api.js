@@ -21,13 +21,13 @@ export async function api(path, options = {}) {
   return response.json()
 }
 
-export async function downloadLogs(query) {
-  const response = await fetch(`/api/logs/export?${query}`)
+export async function downloadFile(path, fallbackName) {
+  const response = await fetch(path)
   if (!response.ok) throw new Error(await errorMessage(response))
   const blob = await response.blob()
   const header = response.headers.get('Content-Disposition') || ''
   const match = /filename\*=UTF-8''([^;]+)/i.exec(header)
-  const filename = match ? decodeURIComponent(match[1]) : 'بصمات.xlsx'
+  const filename = match ? decodeURIComponent(match[1]) : fallbackName
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
@@ -36,4 +36,8 @@ export async function downloadLogs(query) {
   link.click()
   link.remove()
   URL.revokeObjectURL(url)
+}
+
+export function downloadLogs(query) {
+  return downloadFile(`/api/logs/export?${query}`, 'بصمات.xlsx')
 }

@@ -27,7 +27,14 @@ const nameField = ref(null)
 const filters = reactive({
   deviceId: '',
   q: '',
+  finger: 'all',
 })
+
+const fingerItems = [
+  { title: 'كل البصمات', value: 'all' },
+  { title: 'بدون بصمة', value: 'none' },
+  { title: 'مسجّلة', value: 'enrolled' },
+]
 
 const form = reactive({
   deviceId: null,
@@ -52,7 +59,7 @@ const formDevices = computed(() =>
 
 const editing = computed(() => editingUserId.value != null)
 const formTitle = computed(() => (editing.value ? 'تعديل الموظف' : 'إضافة موظف'))
-const filtered = computed(() => filters.deviceId !== '' || filters.q.trim() !== '')
+const filtered = computed(() => filters.deviceId !== '' || filters.q.trim() !== '' || filters.finger !== 'all')
 const pageCount = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)))
 
 const rangeText = computed(() => {
@@ -82,6 +89,7 @@ function queryString() {
   const params = new URLSearchParams()
   if (filters.deviceId !== '' && filters.deviceId != null) params.set('device_id', String(filters.deviceId))
   if (filters.q.trim()) params.set('q', filters.q.trim())
+  if (filters.finger !== 'all') params.set('finger', filters.finger)
   params.set('page', String(page.value))
   return params.toString()
 }
@@ -166,6 +174,7 @@ function clearFilters() {
   ignoreSearch = true
   filters.deviceId = ''
   filters.q = ''
+  filters.finger = 'all'
   ignoreSearch = false
   apply()
 }
@@ -315,6 +324,18 @@ onMounted(async () => {
                 id="employee-filter-device"
                 v-model="filters.deviceId"
                 :items="deviceItems"
+                item-title="title"
+                item-value="value"
+                hide-details
+                @update:model-value="apply"
+              />
+            </div>
+            <div class="field">
+              <label class="field-label" for="employee-filter-finger">البصمة</label>
+              <v-select
+                id="employee-filter-finger"
+                v-model="filters.finger"
+                :items="fingerItems"
                 item-title="title"
                 item-value="value"
                 hide-details

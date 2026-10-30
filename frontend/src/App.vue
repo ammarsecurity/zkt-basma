@@ -39,6 +39,7 @@ const links = [
   { to: '/devices', title: 'الأجهزة', icon: 'fingerprint' },
   { to: '/employees', title: 'الموظفون', icon: 'group' },
   { to: '/logs', title: 'البصمات', icon: 'history' },
+  { to: '/attendance', title: 'الحضور', icon: 'event_available' },
   { to: '/about', title: 'عن المبرمج', icon: 'badge' },
 ]
 </script>
