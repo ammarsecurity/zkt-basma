@@ -1,7 +1,8 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../snack'
+import NavToggle from '../components/NavToggle.vue'
 
 const devices = ref([])
 const loading = ref(true)
@@ -11,8 +12,8 @@ const testing = ref(false)
 const syncingId = ref(null)
 const deleting = ref(false)
 const editingId = ref(null)
+const formOpen = ref(false)
 const pendingDelete = ref(null)
-const formCard = ref(null)
 const nameField = ref(null)
 
 const form = reactive({
@@ -52,15 +53,20 @@ function clearForm() {
   resetErrors()
 }
 
+function openCreate() {
+  clearForm()
+  formOpen.value = true
+}
+
+function closeForm() {
+  if (saving.value || testing.value) return
+  formOpen.value = false
+}
+
 function validIp(ip) {
   const parts = ip.split('.')
   if (parts.length !== 4) return false
   return parts.every((part) => /^\d+$/.test(part) && String(Number(part)) === part && Number(part) <= 255)
-}
-
-function formElement() {
-  const target = formCard.value
-  return target?.$el || target
 }
 
 function validate() {
@@ -123,6 +129,7 @@ async function save() {
       notify('تم حفظ الجهاز')
     }
     clearForm()
+    formOpen.value = false
     await load({ silent: true })
   } catch (err) {
     notify(err.message, 'error')
@@ -155,13 +162,14 @@ function editDevice(device) {
   form.port = String(device.port)
   form.password = String(device.password)
   resetErrors()
-  formElement()?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  formOpen.value = true
 }
 
-function focusForm() {
-  formElement()?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+watch(formOpen, async (open) => {
+  if (!open) return
+  await nextTick()
   nameField.value?.focus()
-}
+})
 
 async function syncDevice(device) {
   syncingId.value = device.id
@@ -208,11 +216,14 @@ onMounted(load)
 <template>
   <div class="page">
     <header class="page-head">
-      <h1 class="page-title">الأجهزة</h1>
+      <div class="title-with-nav">
+        <NavToggle />
+        <h1 class="page-title">الأجهزة</h1>
+      </div>
+      <v-btn color="primary" @click="openCreate">إضافة جهاز</v-btn>
     </header>
 
-    <div class="devices-layout">
-      <v-card class="app-card sheet">
+    <v-card class="app-card sheet">
         <div v-if="loading" class="skeleton" aria-hidden="true">
           <div v-for="row in 5" :key="row" class="skeleton-row">
             <span class="sk"></span>
@@ -231,7 +242,7 @@ onMounted(load)
         <div v-else-if="devices.length === 0" class="state-block">
           <h2>لا توجد أجهزة</h2>
           <p>أضف الجهاز من النموذج، ثم اسحب البصمات.</p>
-          <v-btn color="primary" @click="focusForm">أضف أول جهاز</v-btn>
+          <v-btn color="primary" @click="openCreate">أضف أول جهاز</v-btn>
         </div>
 
         <div v-else class="table-scroll">
@@ -282,8 +293,14 @@ onMounted(load)
         </div>
       </v-card>
 
-      <v-card ref="formCard" class="app-card device-form">
-        <h2 class="card-title">{{ formTitle }}</h2>
+    <v-dialog
+      v-model="formOpen"
+      max-width="520"
+      :persistent="saving || testing"
+      @update:model-value="(open) => { if (!open) closeForm() }"
+    >
+      <v-card class="dialog-card form-dialog">
+        <h2>{{ formTitle }}</h2>
         <form @submit.prevent="save">
           <div class="form-grid">
             <div class="field full">
@@ -337,11 +354,11 @@ onMounted(load)
             <v-btn variant="outlined" type="button" :loading="testing" @click="testConnection">
               اختبار الاتصال
             </v-btn>
-            <v-btn v-if="editing" variant="text" type="button" @click="clearForm">إلغاء</v-btn>
+            <v-btn variant="text" type="button" @click="closeForm">إلغاء</v-btn>
           </div>
         </form>
       </v-card>
-    </div>
+    </v-dialog>
 
     <v-dialog :model-value="pendingDelete != null" max-width="440" @update:model-value="(open) => { if (!open) pendingDelete = null }">
       <v-card class="dialog-card">

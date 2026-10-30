@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useDisplay } from 'vuetify'
 import { api, downloadLogs } from '../api'
 import { notify } from '../snack'
+import NavToggle from '../components/NavToggle.vue'
 
 const { width } = useDisplay()
 const totalVisible = computed(() => (width.value < 600 ? 4 : 7))
@@ -158,7 +159,10 @@ onMounted(async () => {
   <div class="page">
     <div class="stack">
       <header class="page-head">
-        <h1 class="page-title">البصمات</h1>
+        <div class="title-with-nav">
+          <NavToggle />
+          <h1 class="page-title">البصمات</h1>
+        </div>
         <p v-if="!loading && !error" class="page-count">{{ totalText }}</p>
       </header>
 

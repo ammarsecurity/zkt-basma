@@ -75,12 +75,13 @@ export default createVuetify({
     themes: {
       light: {
         colors: {
-          primary: '#2563EB',
-          secondary: '#475569',
+          primary: '#78BC27',
+          'on-primary': '#142006',
+          secondary: '#3A4A32',
           success: '#22C55E',
           warning: '#F59E0B',
           error: '#EF4444',
-          background: '#F8FAFC',
+          background: '#F7F8F4',
           surface: '#FFFFFF',
           'on-surface': '#0F172A',
           'on-background': '#0F172A',

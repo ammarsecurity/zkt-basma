@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, provide, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useDisplay } from 'vuetify'
 import { snack } from './snack'
@@ -32,9 +32,14 @@ function toggleNav() {
   else desktopCollapsed.value = !desktopCollapsed.value
 }
 
+provide('navControls', { toggleNav, rail, isMobile })
+
 const links = [
+  { to: '/', title: 'الإحصائيات', icon: 'analytics' },
   { to: '/devices', title: 'الأجهزة', icon: 'fingerprint' },
+  { to: '/employees', title: 'الموظفون', icon: 'group' },
   { to: '/logs', title: 'البصمات', icon: 'history' },
+  { to: '/about', title: 'عن المبرمج', icon: 'badge' },
 ]
 </script>
 
@@ -53,11 +58,8 @@ const links = [
       width="260"
     >
       <div class="brand">
-        <button v-if="!isMobile" class="rail-btn" type="button" aria-label="طي القائمة" @click="toggleNav">
-          <span class="material-symbols-rounded">menu</span>
-        </button>
-        <strong v-if="!rail">البصمة</strong>
-        <span v-if="!rail" class="brand-mark-text">ZKTeco</span>
+        <img v-if="!rail" class="brand-logo" src="/zkteco-logo.png" alt="ZKTeco" />
+        <img v-else class="brand-mark" src="/zkteco-mark.png" alt="ZKTeco" />
       </div>
 
       <a
@@ -115,6 +117,7 @@ const links = [
       <v-btn class="nav-toggle" icon variant="text" aria-label="القائمة" @click="toggleNav">
         <span class="material-symbols-rounded">menu</span>
       </v-btn>
+      <img class="bar-logo" src="/zkteco-logo.png" alt="ZKTeco" />
       <p class="bar-title">{{ route.meta.title }}</p>
     </v-app-bar>
 

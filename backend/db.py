@@ -1,3 +1,4 @@
+import json
 import sqlite3
 
 from formatting import now_stamp
@@ -64,6 +65,9 @@ def init_db():
                 ON attendance(timestamp);
             """
         )
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(employees)")}
+        if "fingers" not in columns:
+            conn.execute("ALTER TABLE employees ADD COLUMN fingers TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -151,18 +155,99 @@ def mark_sync(conn, device_id, ok, status):
     conn.commit()
 
 
+def list_employees(conn, device_id=None):
+    rows, _total = query_employees(conn, device_id, "", page=None)
+    return rows
+
+
+def query_employees(conn, device_id, query, page):
+    where = []
+    params = []
+    if device_id is not None:
+        where.append("e.device_id = ?")
+        params.append(device_id)
+    if query:
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        where.append("(IFNULL(e.name, '') LIKE ? ESCAPE '\\' OR e.user_id LIKE ? ESCAPE '\\')")
+        like = f"%{escaped}%"
+        params.extend([like, like])
+
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
+    joins = """
+        FROM employees e
+        JOIN devices d ON d.id = e.device_id
+    """
+    total = conn.execute(f"SELECT COUNT(*) AS n {joins} {clause}", params).fetchone()["n"]
+    sql = f"""
+        SELECT
+            e.id,
+            e.device_id,
+            e.user_id,
+            e.name,
+            e.fingers,
+            d.name AS device_name
+        {joins}
+        {clause}
+        ORDER BY CAST(e.user_id AS INTEGER), e.user_id
+    """
+    page_params = list(params)
+    if page is not None:
+        sql += " LIMIT ? OFFSET ?"
+        page_params.extend([PAGE_SIZE, (page - 1) * PAGE_SIZE])
+    rows = conn.execute(sql, page_params).fetchall()
+    return rows, total
+
+
+def upsert_employees(conn, device_id, users):
+    if not users:
+        return
+    current = now_stamp()
+    named = [user for user in users if "fingers" not in user]
+    enrolled = [user for user in users if "fingers" in user]
+    if named:
+        conn.executemany(
+            """
+            INSERT INTO employees (device_id, user_id, name, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(device_id, user_id) DO UPDATE SET
+                name = excluded.name,
+                updated_at = excluded.updated_at
+            """,
+            [(device_id, user["user_id"], user["name"], current) for user in named],
+        )
+    if enrolled:
+        conn.executemany(
+            """
+            INSERT INTO employees (device_id, user_id, name, fingers, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(device_id, user_id) DO UPDATE SET
+                name = excluded.name,
+                fingers = excluded.fingers,
+                updated_at = excluded.updated_at
+            """,
+            [
+                (
+                    device_id,
+                    user["user_id"],
+                    user["name"],
+                    json.dumps(sorted({int(fid) for fid in user["fingers"]})),
+                    current,
+                )
+                for user in enrolled
+            ],
+        )
+
+
+def delete_employee(conn, device_id, user_id):
+    return conn.execute(
+        "DELETE FROM employees WHERE device_id = ? AND user_id = ?",
+        (device_id, user_id),
+    ).rowcount
+
+
 def save_pull(conn, device_id, users, logs):
     current = now_stamp()
-    conn.executemany(
-        """
-        INSERT INTO employees (device_id, user_id, name, updated_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(device_id, user_id) DO UPDATE SET
-            name = excluded.name,
-            updated_at = excluded.updated_at
-        """,
-        [(device_id, user["user_id"], user["name"], current) for user in users],
-    )
+    upsert_employees(conn, device_id, users)
     before = conn.execute(
         "SELECT COUNT(*) AS n FROM attendance WHERE device_id = ?",
         (device_id,),
@@ -248,3 +333,101 @@ def query_logs(conn, device_id, query, date_from, date_to, kind, order, page=Non
 
     rows = conn.execute(sql, page_params).fetchall()
     return rows, total
+
+
+def dashboard(conn):
+    from datetime import date, timedelta
+
+    today = date.today()
+    week_start = today - timedelta(days=6)
+    month_start = today.replace(day=1)
+
+    def count(sql, params=()):
+        return conn.execute(sql, params).fetchone()["n"]
+
+    devices = count("SELECT COUNT(*) AS n FROM devices")
+    employees = count("SELECT COUNT(*) AS n FROM employees")
+    unnamed = count("SELECT COUNT(*) AS n FROM employees WHERE TRIM(IFNULL(name, '')) = ''")
+    punches = count("SELECT COUNT(*) AS n FROM attendance")
+    today_punches = count(
+        "SELECT COUNT(*) AS n FROM attendance WHERE date(timestamp) = date(?)",
+        (today.isoformat(),),
+    )
+    week_punches = count(
+        "SELECT COUNT(*) AS n FROM attendance WHERE date(timestamp) >= date(?)",
+        (week_start.isoformat(),),
+    )
+    month_punches = count(
+        "SELECT COUNT(*) AS n FROM attendance WHERE date(timestamp) >= date(?)",
+        (month_start.isoformat(),),
+    )
+    synced_ok = count("SELECT COUNT(*) AS n FROM devices WHERE last_ok = 1")
+
+    grouped = {
+        row["day"]: row["n"]
+        for row in conn.execute(
+            """
+            SELECT date(timestamp) AS day, COUNT(*) AS n
+            FROM attendance
+            WHERE date(timestamp) >= date(?)
+            GROUP BY date(timestamp)
+            """,
+            (week_start.isoformat(),),
+        )
+    }
+    days = []
+    for offset in range(6, -1, -1):
+        day = today - timedelta(days=offset)
+        key = day.isoformat()
+        days.append({"date": key, "count": grouped.get(key, 0)})
+
+    by_device = conn.execute(
+        """
+        SELECT
+            d.id,
+            d.name,
+            d.last_sync_at,
+            d.last_ok,
+            d.last_status,
+            (SELECT COUNT(*) FROM employees e WHERE e.device_id = d.id) AS employees,
+            (SELECT COUNT(*) FROM attendance a WHERE a.device_id = d.id) AS punches
+        FROM devices d
+        ORDER BY punches DESC, d.name
+        """
+    ).fetchall()
+
+    recent = conn.execute(
+        """
+        SELECT
+            a.id,
+            a.user_id,
+            a.timestamp,
+            a.status,
+            a.device_id,
+            COALESCE(e.name, '') AS employee_name,
+            d.name AS device_name
+        FROM attendance a
+        JOIN devices d ON d.id = a.device_id
+        LEFT JOIN employees e
+            ON e.device_id = a.device_id AND e.user_id = a.user_id
+        ORDER BY a.timestamp DESC, a.id DESC
+        LIMIT 8
+        """
+    ).fetchall()
+
+    return {
+        "today": today.isoformat(),
+        "week_start": week_start.isoformat(),
+        "month_start": month_start.isoformat(),
+        "devices": devices,
+        "employees": employees,
+        "unnamed": unnamed,
+        "punches": punches,
+        "today_punches": today_punches,
+        "week_punches": week_punches,
+        "month_punches": month_punches,
+        "synced_ok": synced_ok,
+        "days": days,
+        "by_device": by_device,
+        "recent": recent,
+    }

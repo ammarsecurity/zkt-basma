@@ -9,6 +9,10 @@ class DeviceError(Exception):
     pass
 
 
+class DuplicateUser(DeviceError):
+    pass
+
+
 def _clean_text(value):
     if value is None:
         return ""
@@ -93,6 +97,145 @@ def test_connection(ip, port, password):
         _close(conn)
 
 
+def _enrolled_fingers(conn):
+    try:
+        templates = conn.get_templates() or []
+    except Exception:
+        log.warning("Reading fingerprint templates failed", exc_info=True)
+        return None
+    grouped = {}
+    for finger in templates:
+        size = int(getattr(finger, "size", 0) or 0)
+        if size <= 0:
+            continue
+        uid = int(getattr(finger, "uid", 0) or 0)
+        fid = int(getattr(finger, "fid", 0) or 0)
+        grouped.setdefault(uid, set()).add(fid)
+    return {uid: sorted(fids) for uid, fids in grouped.items()}
+
+
+def _read_users(conn, with_fingers=False):
+    finger_map = _enrolled_fingers(conn) if with_fingers else None
+    users = []
+    seen = set()
+    for user in conn.get_users() or []:
+        user_id = _clean_text(getattr(user, "user_id", ""))
+        if not user_id or user_id in seen:
+            continue
+        seen.add(user_id)
+        name = _clean_text(getattr(user, "name", ""))
+        if name == f"NN-{user_id}":
+            name = ""
+        item = {"user_id": user_id, "name": name}
+        if finger_map is not None:
+            uid = int(getattr(user, "uid", 0) or 0)
+            item["fingers"] = finger_map.get(uid, [])
+        users.append(item)
+    return users
+
+
+def _use_device(ip, port, password, timeout):
+    conn = _open(ip, port, password, timeout)
+    try:
+        conn.disable_device()
+    except Exception:
+        log.debug("disable_device skipped", exc_info=True)
+    return conn
+
+
+def list_device_users(ip, port, password):
+    conn = _use_device(ip, port, password, timeout=30)
+    try:
+        return _read_users(conn, with_fingers=True)
+    except DeviceError:
+        raise
+    except Exception as exc:
+        log.warning("Reading users failed for %s:%s", ip, port, exc_info=True)
+        raise DeviceError("تعذر قراءة الموظفين من الجهاز") from exc
+    finally:
+        _close(conn)
+
+
+def add_device_user(ip, port, password, user_id, name):
+    conn = _use_device(ip, port, password, timeout=30)
+    try:
+        try:
+            existing = _read_users(conn)
+        except Exception as exc:
+            log.warning("Reading users before add failed", exc_info=True)
+            raise DeviceError("تعذر قراءة الموظفين من الجهاز") from exc
+        if any(user["user_id"] == user_id for user in existing):
+            raise DuplicateUser("رقم الموظف موجود على الجهاز")
+        try:
+            conn.set_user(
+                uid=None,
+                name=name,
+                privilege=0,
+                password="",
+                group_id="",
+                user_id=user_id,
+                card=0,
+            )
+        except DeviceError:
+            raise
+        except Exception as exc:
+            log.warning("set_user failed for %s", user_id, exc_info=True)
+            raise DeviceError("تعذر إضافة الموظف على الجهاز") from exc
+    finally:
+        _close(conn)
+
+
+def update_device_user(ip, port, password, user_id, name):
+    conn = _use_device(ip, port, password, timeout=30)
+    try:
+        try:
+            users = conn.get_users() or []
+        except Exception as exc:
+            log.warning("Reading users before update failed", exc_info=True)
+            raise DeviceError("تعذر قراءة الموظفين من الجهاز") from exc
+        match = next((user for user in users if _clean_text(getattr(user, "user_id", "")) == user_id), None)
+        if match is None:
+            raise DeviceError("الموظف غير موجود على الجهاز")
+        try:
+            conn.set_user(
+                uid=int(match.uid),
+                name=name,
+                privilege=int(getattr(match, "privilege", 0) or 0),
+                password=str(getattr(match, "password", "") or ""),
+                group_id=str(getattr(match, "group_id", "") or ""),
+                user_id=user_id,
+                card=int(getattr(match, "card", 0) or 0),
+            )
+        except DeviceError:
+            raise
+        except Exception as exc:
+            log.warning("set_user update failed for %s", user_id, exc_info=True)
+            raise DeviceError("تعذر تعديل الموظف على الجهاز") from exc
+    finally:
+        _close(conn)
+
+
+def delete_device_user(ip, port, password, user_id):
+    conn = _use_device(ip, port, password, timeout=30)
+    try:
+        try:
+            users = conn.get_users() or []
+        except Exception as exc:
+            log.warning("Reading users before delete failed", exc_info=True)
+            raise DeviceError("تعذر قراءة الموظفين من الجهاز") from exc
+        match = next((user for user in users if _clean_text(getattr(user, "user_id", "")) == user_id), None)
+        if match is None:
+            return False
+        try:
+            conn.delete_user(uid=int(match.uid))
+        except Exception as exc:
+            log.warning("delete_user failed for %s", user_id, exc_info=True)
+            raise DeviceError("تعذر حذف الموظف من الجهاز") from exc
+        return True
+    finally:
+        _close(conn)
+
+
 def pull_device(ip, port, password):
     conn = _open(ip, port, password, timeout=120)
     disabled = False
@@ -103,20 +246,11 @@ def pull_device(ip, port, password):
         except Exception:
             log.debug("disable_device skipped", exc_info=True)
 
-        users = []
-        seen_users = set()
         try:
-            for user in conn.get_users() or []:
-                user_id = _clean_text(getattr(user, "user_id", ""))
-                if not user_id or user_id in seen_users:
-                    continue
-                seen_users.add(user_id)
-                name = _clean_text(getattr(user, "name", ""))
-                if name == f"NN-{user_id}":
-                    name = ""
-                users.append({"user_id": user_id, "name": name})
+            users = _read_users(conn)
         except Exception:
             log.warning("Reading users failed", exc_info=True)
+            users = []
 
         logs = []
         seen_logs = set()
