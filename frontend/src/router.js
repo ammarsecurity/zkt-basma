@@ -4,6 +4,7 @@ import DevicesView from './views/DevicesView.vue'
 import EmployeesView from './views/EmployeesView.vue'
 import LogsView from './views/LogsView.vue'
 import AttendanceView from './views/AttendanceView.vue'
+import DevelopersView from './views/DevelopersView.vue'
 import AboutView from './views/AboutView.vue'
 
 const router = createRouter({
@@ -14,6 +15,7 @@ const router = createRouter({
     { path: '/employees', name: 'employees', component: EmployeesView, meta: { title: 'الموظفون' } },
     { path: '/logs', name: 'logs', component: LogsView, meta: { title: 'البصمات' } },
     { path: '/attendance', name: 'attendance', component: AttendanceView, meta: { title: 'الحضور' } },
+    { path: '/developers', name: 'developers', component: DevelopersView, meta: { title: 'الربط' } },
     { path: '/about', name: 'about', component: AboutView, meta: { title: 'عن المبرمج' } },
   ],
 })

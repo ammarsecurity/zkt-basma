@@ -1,11 +1,13 @@
 import logging
 import json
+import secrets
+import socket
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
 from urllib.parse import quote
 
 import ipaddress
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, field_validator
@@ -218,6 +220,33 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="ZKTeco attendance", lifespan=lifespan)
+
+LOCAL_HOSTS = {"127.0.0.1", "::1"}
+
+
+def _client_host(request: Request):
+    if request.client is None:
+        return ""
+    return request.client.host or ""
+
+
+@app.middleware("http")
+async def guard_remote_api(request: Request, call_next):
+    path = request.url.path
+    if path == "/api" or path.startswith("/api/"):
+        local = _client_host(request) in LOCAL_HOSTS
+        if path == "/api/v1" or path.startswith("/api/v1/"):
+            provided = request.headers.get("x-api-key", "")
+            conn = db.connect()
+            try:
+                expected = db.get_api_key(conn)
+            finally:
+                conn.close()
+            if not provided or not secrets.compare_digest(provided, expected):
+                return JSONResponse(status_code=401, content={"detail": "مفتاح الربط غير صحيح"})
+        elif not local:
+            return JSONResponse(status_code=403, content={"detail": "هذه الواجهة متاحة من هذه الحاسبة فقط"})
+    return await call_next(request)
 
 
 @app.exception_handler(RequestValidationError)
@@ -743,9 +772,10 @@ def get_attendance_details(
     month: str | None = None,
     device_id: int | None = None,
     q: str = "",
+    user_id: str = "",
     page: int = Query(default=1, ge=1),
 ):
-    return _detail_query(month, device_id, q, page)
+    return _detail_query(month, device_id, q, page, user_id)
 
 
 @app.get("/api/attendance/details/export")
@@ -936,6 +966,120 @@ def get_stats():
         }
     finally:
         conn.close()
+
+
+def _base_urls():
+    found = []
+
+    def add(ip):
+        if not ip or ip.startswith("127.") or ip.startswith("169.254."):
+            return
+        url = f"http://{ip}:8000/api/v1"
+        if url not in found:
+            found.append(url)
+
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(("8.8.8.8", 80))
+        add(sock.getsockname()[0])
+        sock.close()
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            add(info[4][0])
+    except OSError:
+        pass
+    if not found:
+        found.append("http://127.0.0.1:8000/api/v1")
+    return found
+
+
+def _integration_payload(key):
+    return {"key": key, "header": "X-API-Key", "base_urls": _base_urls()}
+
+
+@app.get("/api/integration")
+def get_integration():
+    conn = db.connect()
+    try:
+        return _integration_payload(db.get_api_key(conn))
+    finally:
+        conn.close()
+
+
+@app.post("/api/integration/regenerate")
+def regenerate_integration():
+    conn = db.connect()
+    try:
+        return _integration_payload(db.regenerate_api_key(conn))
+    finally:
+        conn.close()
+
+
+def _public_device(item):
+    return {key: value for key, value in item.items() if key != "password"}
+
+
+@app.get("/api/v1/devices")
+def v1_devices():
+    return [_public_device(item) for item in get_devices()]
+
+
+@app.get("/api/v1/employees")
+def v1_employees(
+    device_id: int | None = None,
+    q: str = "",
+    finger: str = "all",
+    page: int = Query(default=1, ge=1),
+):
+    return get_employees(device_id, q, finger, page)
+
+
+@app.get("/api/v1/logs")
+def v1_logs(
+    device_id: int | None = None,
+    q: str = "",
+    date_from: str | None = None,
+    date_to: str | None = None,
+    kind: str = "all",
+    page: int = Query(default=1, ge=1),
+):
+    return get_logs(device_id, q, date_from, date_to, kind, page)
+
+
+@app.get("/api/v1/attendance")
+def v1_attendance(
+    mode: str = "day",
+    date_value: str | None = Query(default=None, alias="date"),
+    month: str | None = None,
+    device_id: int | None = None,
+    q: str = "",
+    status: str = "all",
+    page: int = Query(default=1, ge=1),
+):
+    return get_attendance(mode, date_value, month, device_id, q, status, page)
+
+
+@app.get("/api/v1/attendance/details")
+def v1_attendance_details(
+    month: str | None = None,
+    device_id: int | None = None,
+    q: str = "",
+    user_id: str = "",
+    page: int = Query(default=1, ge=1),
+):
+    return get_attendance_details(month, device_id, q, user_id, page)
+
+
+@app.post("/api/v1/devices/{device_id}/employees", status_code=201)
+def v1_post_employee(device_id: int, body: EmployeeIn):
+    return post_employee(device_id, body)
+
+
+@app.post("/api/v1/devices/{device_id}/sync")
+def v1_post_sync(device_id: int):
+    return post_sync(device_id)
 
 
 @app.get("/")

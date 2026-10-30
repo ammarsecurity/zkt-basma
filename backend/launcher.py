@@ -11,6 +11,7 @@ BACKEND = Path(__file__).resolve().parent
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
+BIND_HOST = "0.0.0.0"
 HOST = "127.0.0.1"
 PORT = 8000
 URL = f"http://{HOST}:{PORT}"
@@ -62,7 +63,7 @@ def main():
     import uvicorn
     from main import app
 
-    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
+    uvicorn.run(app, host=BIND_HOST, port=PORT, log_level="info")
 
 
 if __name__ == "__main__":

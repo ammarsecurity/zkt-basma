@@ -1,4 +1,5 @@
 import json
+import secrets
 import sqlite3
 
 from formatting import now_stamp
@@ -68,6 +69,20 @@ def init_db():
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(employees)")}
         if "fingers" not in columns:
             conn.execute("ALTER TABLE employees ADD COLUMN fingers TEXT")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+        row = conn.execute("SELECT value FROM settings WHERE key = 'api_key'").fetchone()
+        if row is None or not row["value"]:
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES ('api_key', ?)",
+                (secrets.token_urlsafe(32),),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -131,6 +146,29 @@ def update_device(conn, device_id, name, ip, port, password):
 def delete_device(conn, device_id):
     conn.execute("DELETE FROM devices WHERE id = ?", (device_id,))
     conn.commit()
+
+
+def get_api_key(conn):
+    row = conn.execute("SELECT value FROM settings WHERE key = 'api_key'").fetchone()
+    if row and row["value"]:
+        return row["value"]
+    key = secrets.token_urlsafe(32)
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES ('api_key', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key,),
+    )
+    conn.commit()
+    return key
+
+
+def regenerate_api_key(conn):
+    key = secrets.token_urlsafe(32)
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES ('api_key', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key,),
+    )
+    conn.commit()
+    return key
 
 
 def mark_sync(conn, device_id, ok, status):
